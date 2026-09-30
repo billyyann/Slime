@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `OpenHandsRestBackend` (`backend="openhands-rest"`): drives an already-running OpenHands agent-server over its REST API and session event socket, so the agent loop, the model credentials and the workspace all live on the server. Modified file contents are read back over HTTP, which keeps validation working when the client cannot see the server's filesystem. Configure it with `openhands_rest_base_url`, `openhands_rest_api_key`, `openhands_rest_llm_api_key`, `openhands_rest_llm_base_url`, `openhands_rest_max_iterations`, and `openhands_rest_delete_on_disconnect` (each falling back to an `ACA_OPENHANDS_REST_*` environment variable).
+- `open_session()` now also supports `openhands-rest`: the persistent session owns one agent-server conversation, whose event log carries the agent's memory across follow-ups. `resume_session_id` resumes an existing conversation and treats its accumulated usage as the baseline.
+- New optional dependency group `agenter[openhands-rest]` (`httpx`, `websockets`).
+
+### Fixed
+- `AutonomousCodingAgent(backend="openhands", model=...)` no longer silently ignores `model` (it was dropped when constructing `OpenHandsBackend`).
+
 ## [0.1.7] - 2026-08-18
 
 ### Added

@@ -8,6 +8,26 @@ from agenter.coding_backends.openhands import OpenHandsBackend
 from agenter.data_models import BackendError, ConfigurationError
 
 
+class TestOpenHandsBackendFacade:
+    """The facade must forward its configuration to the backend."""
+
+    def test_facade_forwards_model(self) -> None:
+        """Regression: the openhands branch used to drop ``model`` silently."""
+        from agenter import AutonomousCodingAgent
+
+        agent = AutonomousCodingAgent(backend="openhands", model="openai/gpt-4o-mini", sandbox=False)
+        backend = agent._create_backend()
+
+        assert isinstance(backend, OpenHandsBackend)
+        assert backend.model == "openai/gpt-4o-mini"
+
+    def test_facade_keeps_backend_default_without_model(self) -> None:
+        from agenter import AutonomousCodingAgent
+
+        agent = AutonomousCodingAgent(backend="openhands", sandbox=False)
+        assert agent._create_backend().model == "openai/gpt-4o"
+
+
 class TestOpenHandsBackend:
     """Behavior tests for OpenHandsBackend."""
 

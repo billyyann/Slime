@@ -52,7 +52,7 @@ def create_coding_node(
 
     Args:
         cwd: Working directory. Can be overridden by state["cwd"].
-        backend: Backend to use ("anthropic-sdk", "claude-code", "codex", "openhands").
+        backend: Backend to use ("anthropic-sdk", "claude-code", "codex", "openhands", "openhands-rest").
         verbosity: Output verbosity level.
         **agent_kwargs: Additional arguments passed to AutonomousCodingAgent.
 

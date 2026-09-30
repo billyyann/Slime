@@ -80,8 +80,11 @@ pip install agenter[claude-code]
 # Installation with Codex support (OpenAI models)
 pip install agenter[codex]
 
-# Installation with OpenHands support (any model via litellm)
+# Installation with OpenHands SDK support (any model via litellm, in-process)
 pip install agenter[openhands]
+
+# Installation with OpenHands agent-server support (remote, over HTTP/WebSocket)
+pip install agenter[openhands-rest]
 
 # Installation with ACP support (Agent Client Protocol agents)
 pip install agenter[acp]
@@ -100,7 +103,8 @@ pip install agenter[security]
 | **anthropic-sdk** (default) | Pure library | `ANTHROPIC_API_KEY` or AWS credentials |
 | **claude-code** | External CLI | [Claude Code CLI](https://github.com/anthropics/claude-code) installed |
 | **codex** | External CLI | [Codex CLI](https://github.com/openai/codex) installed, `OPENAI_API_KEY` |
-| **openhands** | External service | [OpenHands](https://github.com/OpenHands/OpenHands) runtime running |
+| **openhands** | In-process library | `openhands-sdk` (filesystem access, no isolation) |
+| **openhands-rest** | External service | A running OpenHands agent-server (`agenter[openhands-rest]`), its URL and API key |
 | **acp** | External CLI | Any ACP-compatible agent command, `agent-client-protocol` Python package |
 
 The default `anthropic-sdk` backend works as a pure Python library - just set your API key and go.
@@ -174,6 +178,60 @@ ACP prompts run with Agenter's autonomous backend contract by default, so
 interactive agents do not pause for routine implementation confirmation. Set
 `acp_autonomous=False` if you want the raw ACP agent behavior.
 
+### OpenHands Agent Server (Remote Execution)
+
+The `openhands-rest` backend drives an already-running OpenHands agent-server
+over HTTP and WebSocket instead of linking the SDK into your process. The server
+owns the agent loop, the model credentials and the workspace, so Agenter never
+touches the filesystem the agent works in:
+
+```python
+# 1. Start an agent-server (this also creates its session API key):
+#    pip install openhands-agent-server && agent-server --host 0.0.0.0 --port 18000
+#    OH_SESSION_API_KEYS_0=<key> agent-server --host 0.0.0.0 --port 18000
+agent = AutonomousCodingAgent(
+    backend="openhands-rest",
+    model="anthropic/claude-sonnet-4-5-20250929",
+    openhands_rest_base_url="http://127.0.0.1:18000",  # or ACA_OPENHANDS_REST_BASE_URL
+    openhands_rest_api_key="<server session key>",     # or ACA_OPENHANDS_REST_API_KEY
+    openhands_rest_llm_api_key="<model key>",          # or ACA_OPENHANDS_REST_LLM_API_KEY
+)
+result = await agent.execute(CodingRequest(prompt="Fix the failing tests", cwd="/srv/project"))
+```
+
+`cwd` is a path on the **server**, not on the client: the conversation workspace
+lives there. Modified file contents are read back over HTTP, so validation works
+even when the client cannot see that filesystem.
+
+Key options:
+
+- `openhands_rest_llm_base_url` — custom model endpoint for the server (e.g. a
+  local vLLM or an Anthropic-compatible gateway).
+- `openhands_rest_max_iterations` — cap on agent steps per run, enforced by the
+  server (default 500). This is not Agenter's retry budget.
+- `openhands_rest_delete_on_disconnect` — delete the conversation afterwards.
+  Off by default, so the conversation stays inspectable on the server.
+- Custom tools (`tools=[...]`) are not supported yet: remote tool injection
+  needs the server's `client_tools` protocol.
+- The refusal tool is not advertised either, so `refusal()` is normally `None`.
+  A Refusal-shaped tool call is still captured if the server exposes one.
+
+### Persistent OpenHands Follow-ups
+
+`open_session()` also supports `openhands-rest`. The session owns one
+conversation, whose server-side event log is the agent's memory:
+
+```python
+agent = AutonomousCodingAgent(backend="openhands-rest", openhands_rest_base_url="http://127.0.0.1:18000")
+session = await agent.open_session(cwd="/srv/project", resume_session_id=None)
+try:
+    first = await session.execute("Add a CLI flag for dry runs.")
+    second = await session.execute("Now cover it with a test.")   # same conversation
+    print(session.session_id)
+finally:
+    await session.close()   # the conversation stays on the server
+```
+
 ### Persistent ACP Follow-ups
 
 Use `open_session()` when an ACP coding agent should retain its own conversation
@@ -214,9 +272,10 @@ Each result reports request-local files and usage plus stable `session_id`,
 | **claude-code** | Claude Code SDK (claude-code-sdk) | Anthropic API, AWS Bedrock, Google Vertex | Native OS-level sandbox |
 | **codex** | OpenAI Codex CLI via MCP | OpenAI API | `workspace-write` mode |
 | **openhands** | OpenHands SDK | Any provider via LiteLLM | ⚠️ **No sandbox** |
+| **openhands-rest** | OpenHands agent-server (REST + WebSocket) | Any provider via LiteLLM, resolved server-side | ✅ Server-enforced workspace |
 | **acp** | Agent Client Protocol subprocess | ACP-compatible agents | Depends on the launched ACP agent |
 
-> **⚠️ OpenHands Warning:** The OpenHands backend requires `sandbox=False` and has **no filesystem isolation**. It can read and write anywhere on your system. Use it with caution and only in trusted environments.
+> **⚠️ OpenHands Warning:** The `openhands` backend requires `sandbox=False` and has **no filesystem isolation**. It can read and write anywhere on your system. Use it with caution and only in trusted environments. The `openhands-rest` backend is the isolated alternative: the agent runs on a separate agent-server, which confines every file and git operation to the conversation workspace.
 >
 > **⚠️ ACP Warning:** The ACP backend launches an external agent process. Agenter can observe changed files after the run, but filesystem isolation depends on the ACP agent and its own flags.
 

@@ -27,6 +27,7 @@ BACKEND_ANTHROPIC_SDK: Final = "anthropic-sdk"  # Anthropic SDK with custom tool
 BACKEND_CLAUDE_CODE: Final = "claude-code"  # Claude Code SDK (claude-agent-sdk)
 BACKEND_CODEX: Final = "codex"  # OpenAI Codex CLI via MCP server
 BACKEND_OPENHANDS: Final = "openhands"  # OpenHands SDK
+BACKEND_OPENHANDS_REST: Final = "openhands-rest"  # OpenHands agent-server over REST/WebSocket
 BACKEND_ACP: Final = "acp"  # Agent Client Protocol subprocess backend
 
 
@@ -49,6 +50,7 @@ VALID_BACKENDS: Final = frozenset(
         BACKEND_CLAUDE_CODE,
         BACKEND_CODEX,
         BACKEND_OPENHANDS,
+        BACKEND_OPENHANDS_REST,
         BACKEND_ACP,
     }
 )

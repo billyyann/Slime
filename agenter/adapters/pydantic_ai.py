@@ -33,7 +33,7 @@ class CodingAgent(_BaseAgent):  # type: ignore[type-arg, misc]
 
     Args:
         cwd: Working directory for code operations.
-        backend: Agenter backend ("anthropic-sdk", "claude-code", "codex", "openhands").
+        backend: Agenter backend ("anthropic-sdk", "claude-code", "codex", "openhands", "openhands-rest").
         **agent_kwargs: Additional arguments passed to AutonomousCodingAgent.
 
     Example:

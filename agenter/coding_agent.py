@@ -15,6 +15,7 @@ from .config import (
     BACKEND_CLAUDE_CODE,
     BACKEND_CODEX,
     BACKEND_OPENHANDS,
+    BACKEND_OPENHANDS_REST,
     default_backend,
 )
 from .data_models import Budget, CodingEvent, CodingRequest, CodingResult, Verbosity
@@ -79,6 +80,13 @@ class AutonomousCodingAgent:
         codex_reasoning_effort: str | None = None,
         # Claude Code-specific options
         claude_max_thinking_tokens: int | None = None,
+        # OpenHands REST backend options (agent-server over HTTP/WebSocket)
+        openhands_rest_base_url: str | None = None,
+        openhands_rest_api_key: str | None = None,
+        openhands_rest_llm_api_key: str | None = None,
+        openhands_rest_llm_base_url: str | None = None,
+        openhands_rest_max_iterations: int | None = None,
+        openhands_rest_delete_on_disconnect: bool = False,
         # ACP-specific options
         acp_command: str | None = None,
         acp_args: list[str] | None = None,
@@ -101,9 +109,11 @@ class AutonomousCodingAgent:
                 - "claude-code": Claude Code SDK with native sandbox
                 - "codex": OpenAI Codex CLI via MCP server
                 - "openhands": OpenHands SDK (requires sandbox=False)
+                - "openhands-rest": a running OpenHands agent-server over HTTP/WebSocket
                 - "acp": Agent Client Protocol subprocess backend
-            model: Model to use. Used by "anthropic-sdk", "claude-code", and "codex".
-                If None, each backend uses its own default.
+            model: Model to use. Used by "anthropic-sdk", "claude-code", "codex",
+                "openhands", and "openhands-rest". If None, each backend uses its
+                own default.
             tools: Additional custom tools. Works with all backends.
             validators: Validators to run on generated code. Defaults to [SyntaxValidator()].
             use_anthropic_tools: Use Anthropic's built-in text_editor_20250728 tool
@@ -155,13 +165,20 @@ class AutonomousCodingAgent:
         if backend is None:
             backend = default_backend()
         logger.info("agent_init", backend=backend)
-        if backend not in (BACKEND_ANTHROPIC_SDK, BACKEND_CLAUDE_CODE, BACKEND_CODEX, BACKEND_OPENHANDS, BACKEND_ACP):
+        if backend not in (
+            BACKEND_ANTHROPIC_SDK,
+            BACKEND_CLAUDE_CODE,
+            BACKEND_CODEX,
+            BACKEND_OPENHANDS,
+            BACKEND_OPENHANDS_REST,
+            BACKEND_ACP,
+        ):
             from .data_models import ConfigurationError
 
             raise ConfigurationError(
                 f"Unknown backend: {backend!r}. "
                 f"Use {BACKEND_ANTHROPIC_SDK!r}, {BACKEND_CLAUDE_CODE!r}, {BACKEND_CODEX!r}, "
-                f"{BACKEND_OPENHANDS!r}, or {BACKEND_ACP!r}."
+                f"{BACKEND_OPENHANDS!r}, {BACKEND_OPENHANDS_REST!r}, or {BACKEND_ACP!r}."
             )
         self._backend_type = backend
         self.model = model  # Let backend use its own default if None
@@ -180,6 +197,14 @@ class AutonomousCodingAgent:
 
         # Claude Code-specific options
         self._claude_max_thinking_tokens = claude_max_thinking_tokens
+
+        # OpenHands REST backend options
+        self._openhands_rest_base_url = openhands_rest_base_url
+        self._openhands_rest_api_key = openhands_rest_api_key
+        self._openhands_rest_llm_api_key = openhands_rest_llm_api_key
+        self._openhands_rest_llm_base_url = openhands_rest_llm_base_url
+        self._openhands_rest_max_iterations = openhands_rest_max_iterations
+        self._openhands_rest_delete_on_disconnect = openhands_rest_delete_on_disconnect
 
         # ACP-specific options
         self._acp_command = acp_command
@@ -251,6 +276,26 @@ class AutonomousCodingAgent:
                 logger.warning(
                     "use_anthropic_tools, setting_sources, and allowed_tools are ignored with openhands backend."
                 )
+
+        openhands_rest_opts_set = (
+            openhands_rest_base_url
+            or openhands_rest_api_key
+            or openhands_rest_llm_api_key
+            or openhands_rest_llm_base_url
+            or openhands_rest_max_iterations is not None
+            or openhands_rest_delete_on_disconnect
+        )
+        if backend != BACKEND_OPENHANDS_REST and openhands_rest_opts_set:
+            logger.warning(
+                "openhands_rest_base_url, openhands_rest_api_key, openhands_rest_llm_api_key, "
+                "openhands_rest_llm_base_url, openhands_rest_max_iterations, and "
+                "openhands_rest_delete_on_disconnect are only used with openhands-rest backend."
+            )
+        if backend == BACKEND_OPENHANDS_REST and (use_anthropic_tools or setting_sources or allowed_tools):
+            logger.warning(
+                "use_anthropic_tools, setting_sources, and allowed_tools are ignored with openhands-rest backend."
+            )
+
         if backend == BACKEND_ACP and not acp_command:
             from .data_models import ConfigurationError
 
@@ -300,27 +345,32 @@ class AutonomousCodingAgent:
         verbosity: Verbosity = Verbosity.QUIET,
         log_dir: str | Path | None = None,
     ) -> PersistentCodingSession:
-        """Open a persistent ACP session for multi-turn coding follow-ups.
+        """Open a persistent session for multi-turn coding follow-ups.
 
-        The returned object owns one ACP subprocess and serializes each call to
-        ``execute`` or ``stream_execute`` onto the same remote session until
-        ``close`` is called. Use it as an async context manager when possible.
+        The returned object owns one remote session and serializes each call to
+        ``execute`` or ``stream_execute`` onto it until ``close`` is called. Use
+        it as an async context manager when possible.
+
+        Supported backends:
+        - ``acp``: owns one ACP subprocess.
+        - ``openhands-rest``: owns one conversation on the agent-server, whose
+          event log keeps the agent's memory across follow-ups.
 
         Args:
             cwd: Fixed working directory for every follow-up.
             allowed_write_paths: Optional write restrictions fixed for the session.
             system_prompt: Optional instructions fixed for the session.
             session_budget: Optional cumulative budget across all follow-ups.
-            resume_session_id: Existing ACP session ID to resume or load. The
-                ACP agent must advertise the corresponding capability.
+            resume_session_id: Existing remote session ID to resume (the ACP
+                session id, or the OpenHands conversation id).
             verbosity: Output verbosity level.
             log_dir: Optional path to save prompt/response logs.
         """
-        if self._backend_type != BACKEND_ACP:
+        if self._backend_type not in (BACKEND_ACP, BACKEND_OPENHANDS_REST):
             from .data_models import ConfigurationError
 
             raise ConfigurationError(
-                "open_session() currently supports only backend='acp'.",
+                "open_session() currently supports only backend='acp' and backend='openhands-rest'.",
                 parameter="backend",
                 value=self._backend_type,
             )
@@ -443,8 +493,30 @@ class AutonomousCodingAgent:
             from .coding_backends.openhands import OpenHandsBackend
 
             return OpenHandsBackend(
+                model=self.model,
                 sandbox=False,  # OpenHands requires sandbox=False
                 extra_tools=self._extra_tools,
+            )
+        elif self._backend_type == BACKEND_OPENHANDS_REST:
+            from .coding_backends.openhands_rest import OpenHandsRestBackend
+
+            rest_kwargs: dict[str, Any] = {}
+            if self._openhands_rest_base_url is not None:
+                rest_kwargs["base_url"] = self._openhands_rest_base_url
+            if self._openhands_rest_api_key is not None:
+                rest_kwargs["api_key"] = self._openhands_rest_api_key
+            if self._openhands_rest_llm_api_key is not None:
+                rest_kwargs["llm_api_key"] = self._openhands_rest_llm_api_key
+            if self._openhands_rest_llm_base_url is not None:
+                rest_kwargs["llm_base_url"] = self._openhands_rest_llm_base_url
+            if self._openhands_rest_max_iterations is not None:
+                rest_kwargs["max_iterations"] = self._openhands_rest_max_iterations
+
+            return OpenHandsRestBackend(
+                model=self.model,
+                delete_on_disconnect=self._openhands_rest_delete_on_disconnect,
+                extra_tools=self._extra_tools,
+                **rest_kwargs,
             )
         else:
             return AnthropicSDKBackend(
