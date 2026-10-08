@@ -500,6 +500,10 @@ class OpenHandsRestBackend(BaseBackend):
         self._last_agent_error = None
         self._seen_event_ids = set()
         self._message_sent = False
+        # The previous turn ended on a terminal status; keeping it would make
+        # the first frame of this turn end it immediately, before any state
+        # update of this turn arrives to replace it.
+        self._execution_status = None
         # Durability boundary for this turn: the highest seq on disk when the
         # stream first connected. Events at or below it belong to earlier turns
         # and are ignored if a reconnect replays them.
@@ -736,10 +740,10 @@ class OpenHandsRestBackend(BaseBackend):
         if frame_type in (FRAME_DURABLE, FRAME_TRANSIENT):
             event = frame.get("event")
             if isinstance(event, dict):
-                return self._map_event(event)
+                return self._map_event(event, durable=frame_type == FRAME_DURABLE)
         return []
 
-    def _map_event(self, event: dict[str, Any]) -> list[BackendMessage]:
+    def _map_event(self, event: dict[str, Any], *, durable: bool = True) -> list[BackendMessage]:
         """Map one conversation event to backend messages (deduplicated by id)."""
         event_id = event.get("id")
         if isinstance(event_id, str):
@@ -767,7 +771,7 @@ class OpenHandsRestBackend(BaseBackend):
         if kind == KIND_AGENT_ERROR_EVENT:
             return self._map_agent_error_event(event)
         if kind == KIND_STATE_UPDATE_EVENT:
-            self._record_state_event(event)
+            self._record_state_event(event, durable=durable)
             return []
         if kind == KIND_CONVERSATION_ERROR_EVENT:
             return self._map_conversation_error_event(event)
@@ -860,8 +864,17 @@ class OpenHandsRestBackend(BaseBackend):
         logger.warning("conversation_error", code=code, detail=detail[:300])
         return []
 
-    def _record_state_event(self, event: dict[str, Any]) -> None:
-        """Track the execution status carried by a state-update event."""
+    def _record_state_event(self, event: dict[str, Any], *, durable: bool = True) -> None:
+        """Track the execution status carried by a state-update event.
+
+        Only persisted (durable) state counts. The socket also carries one
+        unpersisted state event — the ``full_state`` snapshot the server
+        synthesises when a subscriber connects. It is taken *before* this
+        turn's message is sent, so its ``execution_status`` is the previous
+        turn's, and accepting it would end the turn the moment it arrives.
+        """
+        if not durable:
+            return
         key = event.get("key")
         value = event.get("value")
         if key == STATE_KEY_FULL_STATE and isinstance(value, dict):

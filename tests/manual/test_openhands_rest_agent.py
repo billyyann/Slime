@@ -4,7 +4,7 @@
 Not collected by pytest (see tests/manual/conftest.py); run it directly:
 
     # 1. Start an agent-server (its session key lives under ~/.openhands/agent-canvas):
-    #    bash run_openhands.sh --bg
+    #    bash run_slime.sh --bg
     # 2. Point this script at it (GLM example):
     export ACA_OPENHANDS_REST_BASE_URL=http://127.0.0.1:18000
     export ACA_OPENHANDS_REST_API_KEY="$(cat ~/.openhands/agent-canvas/api-key.txt)"
